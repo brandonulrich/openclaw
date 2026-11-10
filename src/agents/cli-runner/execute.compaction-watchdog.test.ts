@@ -15,13 +15,18 @@ import {
   startGatewayDiagnosticHeartbeat,
 } from "../../logging/diagnostic.js";
 import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
-import type { CliBackendParseJsonlLifecycleEvent } from "../../plugins/cli-backend.types.js";
+import type {
+  CliBackendParseJsonlLifecycleEvent,
+  CliBackendPlugin,
+} from "../../plugins/cli-backend.types.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { testing } from "../../sessions/session-controller.test-support.js";
+import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../../test-utils/gateway-scheduler-clock.js";
+import { CLI_STREAM_JSON_OUTPUT_LIMITS } from "../cli-output-stream-limits.js";
 import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
 import * as pluginWatchdog from "./execute-plugin-watchdog.js";
 import { waitUntilAborted } from "./execute-plugin.test-support.js";
@@ -103,6 +108,7 @@ const snapshot = (context: ReturnType<typeof contextFor>) =>
 function startCompaction(
   context: ReturnType<typeof contextFor>,
   phase: "success" | "failed" | "stuck" | "tool" = "stuck",
+  exhaust?: "before-start" | "after-start",
 ) {
   const started = createDeferred<number>();
   const advance = createDeferred();
@@ -111,7 +117,19 @@ function startCompaction(
   context.executionTarget = {
     kind: "plugin",
     async *execute(execution) {
+      const padding = { type: "system", subtype: "fixture_padding", padding: "x".repeat(65536) };
+      const frames = Math.ceil(CLI_STREAM_JSON_OUTPUT_LIMITS.maxTurnRawChars / 65536) + 1;
+      if (exhaust === "before-start") {
+        for (let index = 0; index < frames; index += 1) {
+          yield padding;
+        }
+      }
       yield START;
+      if (exhaust === "after-start") {
+        for (let index = 0; index < frames; index += 1) {
+          yield padding;
+        }
+      }
       if (phase === "tool") {
         yield TOOL;
       }
@@ -120,7 +138,7 @@ function startCompaction(
         await advance.promise;
         yield phase === "tool"
           ? { type: "stream_event", event: { type: "ping" } }
-          : { compact_result: phase };
+          : { type: "system", subtype: "status", status: null, compact_result: phase };
         advanced.resolve(Date.now());
       }
       await Promise.race([waitUntilAborted(execution), finish.promise]);
@@ -185,6 +203,53 @@ it.each(["success", "failed"] as const)("releases compaction liveness after %s",
   await waitForDiagnosticEventsDrained();
   expect(snapshot(context).activeBackendLivenessDeadlineAtMs).toBeUndefined();
 });
+
+it.each([
+  { phase: "success", exhaust: "after-start" },
+  { phase: "failed", exhaust: "after-start" },
+  { phase: "success", exhaust: "before-start" },
+  { phase: "failed", exhaust: "before-start" },
+] as const)(
+  "clears exhausted compaction liveness after $phase ($exhaust)",
+  async ({ phase, exhaust }) => {
+    const context = contextFor(`compaction-overflow-${exhaust}-${phase}`, 1_000);
+    const { buildAnthropicCliBackend } = await loadBundledPluginFacade<{
+      buildAnthropicCliBackend: () => CliBackendPlugin;
+    }>({ pluginId: "anthropic", artifactBasename: "api.js" });
+    context.backendResolved.parseJsonlLifecycleEvent =
+      buildAnthropicCliBackend().parseJsonlLifecycleEvent;
+    diagnostics(context);
+    const timedOut = vi.fn();
+    const createWatchdog = pluginWatchdog.createCliPluginWatchdog;
+    vi.spyOn(pluginWatchdog, "createCliPluginWatchdog").mockImplementationOnce((params) =>
+      createWatchdog({
+        ...params,
+        onNoOutputTimeout: (error) => {
+          timedOut(error);
+          params.onNoOutputTimeout(error);
+        },
+      }),
+    );
+    const flow = startCompaction(context, phase, exhaust);
+    const startedAt = await flow.started.promise;
+    await waitForDiagnosticEventsDrained();
+    expect(snapshot(context).activeBackendLivenessDeadlineAtMs).toBe(startedAt + WORK_GRACE_MS);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(timedOut).not.toHaveBeenCalled();
+    flow.advance.resolve();
+    const clearedAt = await flow.advanced.promise;
+    await waitForDiagnosticEventsDrained();
+    expect(snapshot(context).activeBackendLivenessDeadlineAtMs).toBe(clearedAt + 1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(timedOut).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        cliTimeout: expect.objectContaining({ compactionActive: false, mode: "no-output" }),
+      }),
+    );
+    // Timeout without a terminal is still an unknowable exhausted turn, not success.
+    await expect(flow.run).rejects.toThrow("CLI JSONL output exceeded");
+  },
+);
 
 it("requests controller-owned recovery when compaction never ends", async () => {
   vi.useRealTimers();

@@ -4,8 +4,8 @@
 // The cumulative charges bound ordinary reply/thinking/tool-input assembly and
 // tracking, with discounts for discarded payloads and bounded envelopes. They
 // are not limits on raw transcript bytes or a single allocation. Once spent,
-// freeze ordinary assembly and watch only for a terminal result, already-started
-// tool settlement, and attributable foreground child progress. Losing the
+// freeze ordinary assembly; keep bounded lifecycle transitions, a terminal
+// result, started-tool settlement, and attributable child progress. Losing the
 // terminal record would turn a completed run into an unknown-outcome failure.
 // The per-line `maxPendingLineChars` allocation bound is unaffected and fatal.
 import type {

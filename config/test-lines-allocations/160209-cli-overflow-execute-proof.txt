@@ -1,2 +1,2 @@
-# Exact net regression LF growth for PR #160209: real child/executor recovery, plugin transport EOF/fatal controls, frozen assembly/terminal metadata, and preserved charging siblings.
-558
+# Exact net regression LF growth for PR #160209: native/plugin recovery, frozen assembly, lifecycle/watchdog transitions across exhaustion, and real host requester-completion/dedupe boundaries.
+797

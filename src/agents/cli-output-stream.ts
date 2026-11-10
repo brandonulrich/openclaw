@@ -21,7 +21,7 @@ import {
   projectCliBackendEvent,
   projectCliTaggedReasoning,
 } from "./cli-output-events.js";
-import * as cliOutputLifecycle from "./cli-output-lifecycle.js";
+import { createCliBackendLifecycleLineHandler } from "./cli-output-lifecycle.js";
 import {
   decodeCliRecords,
   isClaudeStopHookFeedbackRecord,
@@ -227,28 +227,21 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     );
   };
 
-  const handleCustomJsonlLine = (line: string, rawLine: string): boolean => {
-    const lifecycle = cliOutputLifecycle.parseCliBackendLifecycleLine({
-      line,
-      backendId: params.providerId,
-      backend: params.backend,
-      parse: params.parseJsonlLifecycleEvent,
-    });
-    if (lifecycle) {
-      if ("errorText" in lifecycle) {
-        parseErrorText = lifecycle.errorText;
-      } else {
-        if (claudeStreamJson && !accountClaudeJsonlLine(rawLine.length)) {
-          watchForClaudeTerminalResult(line);
-          return true;
-        }
-        for (const parsed of decodeCliRecords(line)) {
-          observeSessionId(parsed);
-        }
-        for (const event of lifecycle.events) {
-          params.onCompaction?.(cliOutputLifecycle.projectCliBackendLifecycleEvent(event));
-        }
+  const handleLifecycleJsonlLine = createCliBackendLifecycleLineHandler({
+    ...params,
+    accountLine: (chars) => {
+      if (claudeStreamJson && !turnBudget.exhausted) {
+        accountClaudeJsonlLine(chars);
       }
+    },
+    onRecord: observeSessionId,
+    onErrorText: (errorText) => {
+      parseErrorText = errorText;
+    },
+  });
+
+  const handleCustomJsonlLine = (line: string, rawLine: string): boolean => {
+    if (handleLifecycleJsonlLine(line, rawLine)) {
       return true;
     }
     if (!params.parseJsonlEvent) {
@@ -667,7 +660,9 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
       return;
     }
     if (turnBudget.exhausted) {
-      watchForClaudeTerminalResult(line);
+      if (!handleLifecycleJsonlLine(line, rawLine)) {
+        watchForClaudeTerminalResult(line);
+      }
       return;
     }
     if (!line) {

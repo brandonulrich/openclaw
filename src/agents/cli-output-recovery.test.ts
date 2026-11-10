@@ -204,6 +204,24 @@ describe("Claude cumulative budget recovery", () => {
     });
   });
 
+  it("keeps lifecycle parser failures fatal after exhaustion without parsing blank frames", () => {
+    const lifecycle = vi.fn((raw: string) => {
+      if (raw === "bad lifecycle") {
+        throw new Error("fixture lifecycle failure");
+      }
+      return null;
+    });
+    const parser = createClaudeParser({ parseJsonlLifecycleEvent: lifecycle });
+    exhaustLines(parser);
+    expect(lifecycle).not.toHaveBeenCalled();
+    parser.push("bad lifecycle\n");
+    parser.push(line(terminal));
+    expect(parser.getFatalErrorText()).toBe(
+      "CLI backend claude-cli JSONL lifecycle parser failed: fixture lifecycle failure",
+    );
+    expect(parser.getOutput()?.errorText).toBe(parser.getFatalErrorText());
+  });
+
   it("keeps a plugin parser failure fatal after exhaustion", () => {
     const parser = createClaudeParser({
       parseJsonlEvent: () => {

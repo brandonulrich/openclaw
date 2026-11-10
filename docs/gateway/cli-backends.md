@@ -972,7 +972,10 @@ For Claude-compatible JSONL streams, exhausting the cumulative 8 MiB or 20,000
 ordinary-frame assembly budget stops ordinary text, thinking, and tool-input
 assembly, not the subprocess. OpenClaw continues watching for the terminal result,
 settling only tool calls already started and observing attributed progress for an
-active foreground Agent/Task. It does not start new tool tracking after exhaustion.
+active foreground Agent/Task. Bounded compaction lifecycle transitions also stay
+active, so a completed or failed compaction clears its watchdog allowance even
+when it crosses exhaustion (or begins afterward). This does not resume ordinary
+output assembly or start new tool tracking.
 A recovered terminal result supplies the final reply, session identity, and usage;
 previously assembled text connected through a tool split remains a bounded prefix.
 Truncation is reported in the logs, not appended to the reply. Without a terminal

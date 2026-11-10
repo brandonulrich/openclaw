@@ -5,9 +5,10 @@ import type {
   CliBackendParseJsonlLifecycleEvent,
   CliBackendParsedJsonlLifecycleEvent,
 } from "../plugins/cli-backend.types.js";
-import type { CliCompactionDelta } from "./cli-output-contracts.js";
+import type { CliCompactionDelta, CliJsonlStreamingParserOptions } from "./cli-output-contracts.js";
+import { decodeCliRecords } from "./cli-output-records.js";
 
-export function parseCliBackendLifecycleLine(params: {
+function parseCliBackendLifecycleLine(params: {
   line: string;
   backendId: string;
   backend: CliBackendConfig;
@@ -35,10 +36,50 @@ export function parseCliBackendLifecycleLine(params: {
   }
 }
 
-export function projectCliBackendLifecycleEvent(
+function projectCliBackendLifecycleEvent(
   event: CliBackendParsedJsonlLifecycleEvent,
 ): CliCompactionDelta {
   return event.phase === "start"
     ? { phase: "start" }
     : { phase: "end", completed: event.completed };
+}
+
+/** Lifecycle transitions carry bounded control state, not ordinary reply assembly.
+ * They must still close (or begin) compaction after a cumulative budget is spent. */
+export function createCliBackendLifecycleLineHandler(
+  params: Pick<
+    CliJsonlStreamingParserOptions,
+    "backend" | "providerId" | "parseJsonlLifecycleEvent" | "onCompaction"
+  > & {
+    accountLine: (chars: number) => void;
+    onRecord: (record: Record<string, unknown>) => void;
+    onErrorText: (errorText: string) => void;
+  },
+) {
+  return (line: string, rawLine: string): boolean => {
+    if (!line) {
+      return false;
+    }
+    const lifecycle = parseCliBackendLifecycleLine({
+      line,
+      backendId: params.providerId,
+      backend: params.backend,
+      parse: params.parseJsonlLifecycleEvent,
+    });
+    if (!lifecycle) {
+      return false;
+    }
+    if ("errorText" in lifecycle) {
+      params.onErrorText(lifecycle.errorText);
+    } else {
+      params.accountLine(rawLine.length);
+      for (const record of decodeCliRecords(line)) {
+        params.onRecord(record);
+      }
+      for (const event of lifecycle.events) {
+        params.onCompaction?.(projectCliBackendLifecycleEvent(event));
+      }
+    }
+    return true;
+  };
 }
