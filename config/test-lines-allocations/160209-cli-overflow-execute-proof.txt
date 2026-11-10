@@ -1,0 +1,2 @@
+# Exact new regression lines for PR #160209: real child/supervisor/executor recovery and diagnostic-owner contracts, absent from parser-only proof.
+266
