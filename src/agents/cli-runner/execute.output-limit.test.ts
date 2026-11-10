@@ -25,7 +25,7 @@ vi.mock("../../process/supervisor/adapters/child.js", () => ({
 
 type SupervisorSpawnInput = Parameters<ReturnType<typeof getProcessSupervisor>["spawn"]>[0];
 
-const { maxPendingLineChars, maxTurnRawChars } = CLI_STREAM_JSON_OUTPUT_LIMITS;
+const { maxPendingLineChars } = CLI_STREAM_JSON_OUTPUT_LIMITS;
 
 function buildClaudeStreamJsonRunContext(runId: string): PreparedCliRunContext {
   const context = buildContext(runId);
@@ -106,42 +106,74 @@ describe("CLI stream-json output limit", () => {
     },
   );
 
-  it("ends a plugin-owned turn with the output limit error once the budget is spent", async () => {
-    const context = buildClaudeStreamJsonRunContext("run-limit-plugin");
-    const record = { type: "system", subtype: "fixture_padding", padding: "x".repeat(1024 * 1024) };
-    const recordChars = JSON.stringify(record).length + 1;
-    let yielded = 0;
-    let closed = false;
-    let aborted = false;
-    // Plugin transports still resolve the backend executable; keep that off the host PATH.
-    context.preparedBackend.backend.command = process.execPath;
-    context.executionTarget = {
-      kind: "plugin",
-      async *execute(execution) {
-        execution.abortSignal?.addEventListener("abort", () => {
-          aborted = true;
-        });
-        try {
-          // The baseline keeps pulling these records after the turn is already lost.
-          while (yielded < 12) {
-            yielded += 1;
-            yield record;
+  it.each(["success", "missing", "oversize"] as const)(
+    "watches exhausted plugin-owned output until %s",
+    async (outcome) => {
+      const context = buildClaudeStreamJsonRunContext(`run-limit-plugin-${outcome}`);
+      const record = {
+        type: "system",
+        subtype: "fixture_padding",
+        padding: "x".repeat(1024 * 1024),
+      };
+      let yielded = 0;
+      let closed = false;
+      let aborted = false;
+      let abortedBeforeTerminal = false;
+      context.preparedBackend.backend.command = process.execPath;
+      context.executionTarget = {
+        kind: "plugin",
+        async *execute(execution) {
+          execution.abortSignal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+          try {
+            while (yielded < 12) {
+              yielded += 1;
+              yield record;
+            }
+            if (outcome === "oversize") {
+              yield { type: "system", padding: "x".repeat(maxPendingLineChars) };
+            } else if (outcome === "success") {
+              abortedBeforeTerminal = execution.abortSignal?.aborted === true;
+              yield {
+                type: "result",
+                subtype: "success",
+                is_error: false,
+                session_id: "plugin-session",
+                result: "done",
+                usage: { input_tokens: 11, output_tokens: 7 },
+              };
+            }
+          } finally {
+            closed = true;
           }
-          yield { type: "result", subtype: "success", is_error: false, result: "done" };
-        } finally {
-          closed = true;
-        }
-      },
-    };
-
-    await expect(executePreparedCliRun(context)).rejects.toMatchObject({
-      name: "FailoverError",
-      reason: "format",
-      message: `CLI JSONL output exceeded ${maxTurnRawChars} characters; refusing to parse output.`,
-    });
-    // The record that crosses the budget is the last one pulled from the CLI.
-    expect(yielded).toBe(Math.floor(maxTurnRawChars / recordChars) + 1);
-    expect(aborted).toBe(true);
-    expect(closed).toBe(true);
-  });
+        },
+      };
+      const run = executePreparedCliRun(context);
+      if (outcome === "success") {
+        await expect(run).resolves.toMatchObject({
+          text: "done",
+          sessionId: "plugin-session",
+          usage: { input: 11, output: 7 },
+        });
+        expect(abortedBeforeTerminal).toBe(false);
+      } else if (outcome === "missing") {
+        // The plugin transport owns terminal presence and rejects EOF before
+        // executeCliProcess can finalize the parser's cumulative-limit outcome.
+        await expect(run).rejects.toThrow(
+          "CLI plugin runtime completed without a terminal result.",
+        );
+      } else {
+        await expect(run).rejects.toMatchObject({
+          name: "FailoverError",
+          reason: "format",
+          message: `CLI JSONL line exceeded ${maxPendingLineChars} characters; refusing to parse output.`,
+        });
+      }
+      // Closing any plugin turn fences its retained capabilities by aborting.
+      expect(aborted).toBe(true);
+      expect(yielded).toBe(12);
+      expect(closed).toBe(true);
+    },
+  );
 });

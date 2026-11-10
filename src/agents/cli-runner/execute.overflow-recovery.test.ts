@@ -38,7 +38,7 @@ afterEach(() => {
 const fixture = String.raw`
 import fs from "node:fs";
 import path from "node:path";
-const [root, mode, maxLines, maxChars, maxLine] = process.argv.slice(2);
+const [root, mode, maxLines, maxChars, maxLine, agentToolName] = process.argv.slice(2);
 const line = (record) => JSON.stringify(record) + "\n";
 const write = (text) => new Promise((resolve) => process.stdout.write(text, resolve));
 async function checkpoint(label, records) {
@@ -54,7 +54,7 @@ async function checkpoint(label, records) {
 }
 await checkpoint("started", [{
   type: "assistant",
-  message: {content: [{type: "tool_use", id: "agent-1", name: "Agent", input: {prompt: "fixture"}}]},
+  message: {content: [{type: "tool_use", id: "agent-1", name: agentToolName, input: {prompt: "fixture"}}]},
 }]);
 if (mode.startsWith("lines")) {
   const ordinary = line({type: "system", subtype: "fixture_ordinary"});
@@ -92,6 +92,7 @@ await checkpoint("settled", [result, result]);
 if (mode !== "missing" && mode !== "lines-missing") await write(line({
   type: "result", subtype: "success", is_error: false,
   session_id: "fixture-cli-session", result: "terminal answer",
+  usage: {input_tokens: 11, output_tokens: 7},
 }));
 `;
 
@@ -197,6 +198,7 @@ async function runFixture(
           String(CLI_STREAM_JSON_OUTPUT_LIMITS.maxTurnLines),
           String(CLI_STREAM_JSON_OUTPUT_LIMITS.maxTurnRawChars),
           String(CLI_STREAM_JSON_OUTPUT_LIMITS.maxPendingLineChars),
+          mode === "chars" ? "Task" : "Agent",
         ],
         env: {},
         prompt: "fixture only",
@@ -220,7 +222,12 @@ it.each(["normal", "lines", "chars"] as const)(
   "recovers the terminal reply after %s output with outstanding Agent settlement",
   async (mode) => {
     const run = await runFixture(mode);
-    expect(run.output).toMatchObject({ text: "terminal answer", sessionId: "fixture-cli-session" });
+    const agentToolName = mode === "chars" ? "Task" : "Agent";
+    expect(run.output).toMatchObject({
+      text: "terminal answer",
+      sessionId: "fixture-cli-session",
+      usage: { input: 11, output: 7 },
+    });
     expect(run.toolEvents.filter((e) => e.phase === "start").map((e) => e.toolCallId)).toEqual([
       "agent-1",
     ]);
@@ -231,13 +238,13 @@ it.each(["normal", "lines", "chars"] as const)(
     expect(run.snapshots.get("unattributed")).toMatchObject({
       activeToolCallId: "agent-1",
       lastProgressAgeMs: 16 * 60_000,
-      lastProgressReason: "tool:Agent:started",
+      lastProgressReason: `tool:${agentToolName}:started`,
     });
     for (const label of ["progress1", "progress2"]) {
       expect(run.snapshots.get(label)).toMatchObject({
         activeToolCallId: "agent-1",
         lastProgressAgeMs: 0,
-        lastProgressReason: "tool:Agent:subagent_progress",
+        lastProgressReason: `tool:${agentToolName}:subagent_progress`,
       });
     }
   },

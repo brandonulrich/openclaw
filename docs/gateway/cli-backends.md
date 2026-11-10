@@ -968,10 +968,20 @@ Claude CLI backends scale this cap with the resolved Claude context window inste
 
 ## Troubleshooting
 
-If JSONL output exceeds the parser's turn, line-size, or line-count limit, OpenClaw
-stops the local CLI turn and reports the output-limit error. Further CLI work is
-interrupted because OpenClaw can no longer observe its results. An established
-Claude session binding is kept so the next turn can resume it.
+For Claude-compatible JSONL streams, exhausting the cumulative 8 MiB or 20,000
+ordinary-frame assembly budget stops ordinary text, thinking, and tool-input
+assembly, not the subprocess. OpenClaw continues watching for the terminal result,
+settling only tool calls already started and observing attributed progress for an
+active foreground Agent/Task. It does not start new tool tracking after exhaustion.
+A recovered terminal result supplies the final reply, session identity, and usage;
+previously assembled text connected through a tool split remains a bounded prefix.
+Truncation is reported in the logs, not appended to the reply. Without a terminal
+result, the turn still fails (the native subprocess reports the cumulative
+output-limit error; plugin transports can report missing terminal output first).
+
+The individual 8 MiB line guard and parser errors remain fatal, including after
+cumulative exhaustion. Other JSONL dialects retain fatal cumulative limits. An
+established Claude session binding is kept so the next turn can resume it.
 
 Once a final CLI reply is committed to the OpenClaw transcript, later cleanup,
 continuity, or authority failures are logged as warnings and do not turn the

@@ -1,2 +1,2 @@
-# Exact new regression lines for PR #160209: real child/supervisor/executor recovery and diagnostic-owner contracts, absent from parser-only proof.
-266
+# Exact net regression LF growth for PR #160209: real child/executor recovery, plugin transport EOF/fatal controls, frozen assembly/terminal metadata, and preserved charging siblings.
+558

@@ -44,9 +44,10 @@ function runTurn(parentToolUseId: string | null, records: number, chars: number)
     type: "assistant",
     message: { id: "final-message", content: [{ type: "text", text: "completed" }] },
   });
+  const errorBeforeTerminal = parser.getErrorText();
   push({ type: "result", subtype: "success", result: "completed" });
   parser.finish();
-  return { parser, progress };
+  return { parser, progress, errorBeforeTerminal };
 }
 
 describe("Claude subagent output budget", () => {
@@ -60,9 +61,11 @@ describe("Claude subagent output budget", () => {
   });
 
   it("still bounds the same volume in the parent conversation", () => {
-    const { parser } = runTurn(null, 300, 40 * 1024);
-    expect(parser.getErrorText()).toMatch(/exceeded 8388608 characters/);
-    expect(parser.getOutput()?.text).toBe("");
+    const { parser, errorBeforeTerminal } = runTurn(null, 300, 40 * 1024);
+    expect(errorBeforeTerminal).toMatch(/exceeded 8388608 characters/);
+    expect(parser.getErrorText()).toBeNull();
+    expect(parser.getOutput()?.text).toBe("completed");
+    expect(parser.getOutputTruncationText()).toContain("exceeded 8388608 characters");
   });
 
   it("charges retained child-attributed text deltas against the parent budget", () => {
@@ -85,7 +88,10 @@ describe("Claude subagent output budget", () => {
   });
 
   it("still bounds a subagent flood by frames", () => {
-    const { parser } = runTurn(AGENT_CALL, 20_001, 1);
-    expect(parser.getErrorText()).toMatch(/exceeded 20000 lines/);
+    const { parser, errorBeforeTerminal } = runTurn(AGENT_CALL, 20_001, 1);
+    expect(errorBeforeTerminal).toMatch(/exceeded 20000 lines/);
+    expect(parser.getErrorText()).toBeNull();
+    expect(parser.getOutput()?.text).toBe("completed");
+    expect(parser.getOutputTruncationText()).toContain("exceeded 20000 lines");
   });
 });
