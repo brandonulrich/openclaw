@@ -20,6 +20,7 @@ import { isFencedProviderReadAction } from "../../channels/plugins/message-actio
 import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
@@ -31,6 +32,7 @@ import {
 } from "../../shared/clawhub-recommendations.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
+import { captureAgentRunTerminalPersistence } from "../agent-run-terminal-writes.js";
 import { formatErrorMessage, toErrorObject } from "../errors.js";
 import { throwIfAborted } from "./abort.js";
 import {
@@ -298,11 +300,13 @@ async function handleBroadcastAction(
   };
 }
 
-async function handleInternalSourceReplySendAction(
+async function sendInternalSourceReply(
   input: MessageActionInput,
   params: Record<string, unknown>,
+  terminalOwner: ReturnType<typeof captureAgentRunTerminalPersistence> | undefined,
 ): Promise<MessageActionResult> {
   throwIfAborted(input.abortSignal);
+  const writeContext = terminalOwner?.writeContext;
   const dryRun = Boolean(input.dryRun ?? readBooleanParam(params, "dryRun"));
   const agentId = input.agentId;
   let recommendations:
@@ -446,23 +450,28 @@ async function handleInternalSourceReplySendAction(
         toolCallId: input.sourceReplyToolCallId,
         sourceTurnId: input.messageActionAuthorization?.toolContext?.currentSourceTurnId,
       });
-    if (
+    const deliveryAuthority =
       input.messageActionAuthorization?.scheduled ||
       input.messageActionAuthorization?.deliveryAttempt
-    ) {
-      await withSessionTranscriptWriteAssertion(
-        {
-          agentId: input.agentId ?? resolveSessionAgentId({ sessionKey, config: input.cfg }),
-          sessionKey,
-          sessionId: input.sessionId,
-          storePath: resolveSessionStorePathCore(input.cfg.session?.store, { agentId }),
-        },
-        captureMessageDeliveryAuthority(input),
-        persist,
-      );
-    } else {
-      await persist();
-    }
+        ? captureMessageDeliveryAuthority(input)
+        : undefined;
+    // Retain the captured candidate assertion through asynchronous preparation and commit.
+    const persistGuarded = () =>
+      writeContext || deliveryAuthority
+        ? withSessionTranscriptWriteAssertion(
+            {
+              agentId: input.agentId ?? resolveSessionAgentId({ sessionKey, config: input.cfg }),
+              sessionKey,
+              sessionId: input.sessionId,
+              storePath: resolveSessionStorePathCore(input.cfg.session?.store, { agentId }),
+            },
+            composeSessionSourceAssertion([writeContext?.assertCurrent, deliveryAuthority]),
+            persist,
+          )
+        : persist();
+    const persistence = writeContext ? writeContext.run(persistGuarded) : persistGuarded();
+    terminalOwner?.track?.(persistence);
+    await persistence;
     persistedTranscriptOwner = true;
   }
   const payload = {
@@ -520,7 +529,9 @@ async function handleInternalSourceReplySendAction(
 
 export async function runMessageAction(input: MessageActionInput): Promise<MessageActionResult> {
   throwIfAborted(input.abortSignal);
-  const cfg = input.cfg;
+  // Sink routing awaits; capture the originating candidate before that boundary.
+  const terminalOwner = input.runId ? captureAgentRunTerminalPersistence(input.runId) : undefined;
+  const { cfg, action } = input;
   let params = { ...input.params };
   const resolvedAgentId =
     input.agentId ??
@@ -531,7 +542,6 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   parseJsonMessageParam(params, "delivery");
   parseJsonMessageParam(params, "interactive");
 
-  const action = input.action;
   enforceMessageActionAllowlist({
     cfg,
     agentId: resolvedAgentId,
@@ -547,7 +557,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
     throw new Error('Poll fields require action "poll"; use action "poll" instead of "send".');
   }
   if (await shouldUseInternalSourceReplySink(input, params)) {
-    return handleInternalSourceReplySendAction({ ...input, agentId: resolvedAgentId }, params);
+    return sendInternalSourceReply({ ...input, agentId: resolvedAgentId }, params, terminalOwner);
   }
   if (params.clawhub !== undefined) {
     throw new Error(
@@ -673,6 +683,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
           // Channel discovery is process-stable; carry its prepared plugin and route
           // into every action so handlers cannot rediscover a different transport.
           return {
+            sourceReplyPersistence: terminalOwner,
             cfg,
             params,
             idempotencyKey: normalizeOptionalString(params.idempotencyKey),

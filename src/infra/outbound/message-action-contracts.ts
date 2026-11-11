@@ -22,6 +22,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import type { GatewayClientMode, GatewayClientName } from "../../utils/message-channel.js";
+import type { captureAgentRunTerminalPersistence } from "../agent-run-terminal-writes.js";
 import type { DeliverOutboundPayloadsParams } from "./deliver-contracts.js";
 import type { ConversationDeliveryTarget } from "./delivery-completion.js";
 import type { MessageBroadcastAccountPlan } from "./message-account-selection.js";
@@ -263,6 +264,7 @@ export function resolveMessageActionMessageId(payload: unknown): string | undefi
 }
 
 export type ResolvedActionContext = {
+  sourceReplyPersistence?: ReturnType<typeof captureAgentRunTerminalPersistence>;
   cfg: OpenClawConfig;
   params: Record<string, unknown>;
   idempotencyKey?: string;

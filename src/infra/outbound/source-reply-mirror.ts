@@ -17,10 +17,13 @@ import type { ChannelId, ChannelMessageActionName } from "../../channels/plugins
 import { resolveChannelThreadAddressing } from "../../channels/thread-addressing.js";
 import type { InternalChannelThreadingToolContext } from "../../channels/threading-tool-context-internal.js";
 import { appendAssistantMessageToSessionTranscript } from "../../config/sessions.js";
+import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context-store.js";
 import { getOwnedSessionTranscriptWriterFence } from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import { readTrimmedStringAlias } from "../../utils/string-readers.js";
+import type { CapturedAgentRunTerminalWriteContext } from "../agent-run-terminal-writes.js";
+import { generateSecureUuid } from "../secure-random.js";
 import { resolveImplicitMessageActionTarget } from "./message-action-normalization.js";
 import { createOutboundPayloadPlan, projectOutboundPayloadPlanForMirror } from "./payloads.js";
 import { normalizeTargetForProvider } from "./target-normalization.js";
@@ -43,6 +46,7 @@ type SourceReplyTranscriptMirrorParams = {
   /** Actual local delivery content; absent for legacy Gateway request projections. */
   deliveredPayloads?: readonly ReplyPayload[];
   replyToIsExplicit?: boolean;
+  writeContext?: CapturedAgentRunTerminalWriteContext;
 };
 
 type MirrorableSourceReplyTranscriptParams = SourceReplyTranscriptMirrorParams & {
@@ -426,6 +430,31 @@ function isDeliveredCurrentSourceReplyAction(params: SourceReplyTranscriptMirror
 export async function mirrorDeliveredSourceReplyToTranscript(
   params: SourceReplyTranscriptMirrorParams,
 ): Promise<boolean> {
+  const captured = params.writeContext;
+  if (!captured) {
+    return await mirrorSourceReply(params);
+  }
+  // One receipt also deduplicates a retry if publication failed after the original commit.
+  const request = {
+    ...params,
+    idempotencyKey: params.idempotencyKey ?? `source-reply:${generateSecureUuid()}`,
+  };
+  try {
+    return await captured.run(() => mirrorSourceReply(request));
+  } catch (error) {
+    try {
+      captured.assertCurrent();
+    } catch {
+      // Delivery already happened. Retain its row, but never borrow a replacement writer.
+      return await runWithoutOwnedSessionTranscriptWrites(() =>
+        mirrorSourceReply({ ...request, writeContext: undefined }),
+      );
+    }
+    throw error;
+  }
+}
+
+async function mirrorSourceReply(params: SourceReplyTranscriptMirrorParams): Promise<boolean> {
   const deliveryFact = projectPluginMessageDeliveryFact(params.deliveredPayload);
   if (
     (deliveryFact && (deliveryFact.status !== "settled" || deliveryFact.partialDelivery)) ||
@@ -465,6 +494,7 @@ export async function mirrorDeliveredSourceReplyToTranscript(
   const result = await appendAssistantMessageToSessionTranscript({
     agentId: params.agentId,
     sessionKey: params.sessionKey,
+    assertCurrent: params.writeContext?.assertCurrent,
     ...(params.sessionId ? { expectedSessionId: params.sessionId } : {}),
     ...(writerFence?.expectedLifecycleRevision !== undefined
       ? { expectedLifecycleRevision: writerFence.expectedLifecycleRevision }

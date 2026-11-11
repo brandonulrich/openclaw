@@ -374,6 +374,7 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     abortSignal,
   } = ctx;
   throwIfAborted(abortSignal);
+  const sourceReplyPersistence = ctx.sourceReplyPersistence;
   const action: ChannelMessageActionName = "send";
   const to = readToolStringParam(params, "to", { required: true });
   let sendPayload = await buildMessagePayload({
@@ -723,7 +724,8 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     !delivery.partialDelivery
   ) {
     try {
-      await mirrorDeliveredSourceReplyToTranscript({
+      const persistence = mirrorDeliveredSourceReplyToTranscript({
+        writeContext: sourceReplyPersistence?.writeContext,
         action,
         channel,
         actionParams: params,
@@ -740,7 +742,9 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
         deliveredPayload: send.payload,
         deliveredPayloads: send.deliveredPayloads,
         replyToIsExplicit: reply?.source === "explicit",
-      });
+      }).then(() => undefined);
+      sourceReplyPersistence?.track?.(persistence);
+      await persistence;
     } catch (error) {
       // Delivery is already committed; a transcript failure must not resend it.
       log.warn(`Source reply transcript commit failed: ${formatErrorMessage(error)}`);

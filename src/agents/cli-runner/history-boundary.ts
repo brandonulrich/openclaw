@@ -567,9 +567,20 @@ async function planCliHistoryBoundary(
       )
     ).getBranch();
     assertCurrent();
-    // Bookkeeping is not a conversation. Retained reset rows, summaries, custom
-    // context, missing anchors and bounded cuts must never look like a fresh start.
-    allowed = !truncated && buildSessionContext(branch).messages.length === 0;
+    const boundaryIndex = branch.findLastIndex(
+      (entry) => entry.type === "reset" || entry.type === "compaction",
+    );
+    const lastBoundary = branch[boundaryIndex];
+    // A preceding row can belong to the discarded prefix of a clearing reset.
+    // A dependency may also precede an injected reset; its paired placement emits
+    // a message, so the empty-context check below still refuses that case.
+    const clearsTruncatedPrefix =
+      boundaryIndex > 0 &&
+      lastBoundary?.type === "reset" &&
+      lastBoundary.firstKeptEntryId === undefined;
+    // Bookkeeping is not a conversation. Still require an empty current context.
+    allowed =
+      (!truncated || clearsTruncatedPrefix) && buildSessionContext(branch).messages.length === 0;
   }
   allowed &&= watermark.maxSeq === null || typeof watermark.generation === "string";
   if (!allowed && !stored) {

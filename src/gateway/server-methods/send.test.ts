@@ -17,6 +17,12 @@ import {
 } from "../../config/runtime-snapshot.js";
 import type { SessionTranscriptAppendResult } from "../../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getAgentRunContext } from "../../infra/agent-run-registry.js";
+import {
+  bindAgentRunTerminalWriteContext,
+  clearAgentRunTerminalWriteContext,
+  drainAgentRunTerminalWrites,
+} from "../../infra/agent-run-terminal-writes.js";
 import { OutboundDeliveryError } from "../../infra/outbound/deliver-types.js";
 import { resolveOutboundTargetWithPlugin } from "../../infra/outbound/targets-resolve-shared.js";
 import { buildOutboundMediaLoadOptions } from "../../media/load-options.js";
@@ -1193,6 +1199,46 @@ describe("gateway send conversation ownership", () => {
       expect(mocks.dispatchChannelMessageAction).not.toHaveBeenCalled();
     }
   });
+
+  it.each([false, true])(
+    "captures sender writer before delivery awaits (replaced: %s)",
+    async (replaced) => {
+      registerMessageActionPlugin();
+      const sessionKey = "agent:main:telegram:direct:chat-123";
+      const owned = createMessageActionTurnClientForTests({
+        sessionKey,
+        runId: `mirror-owner-${replaced}`,
+      });
+      const authority = getAgentRunContext(`mirror-owner-${replaced}`)?.delegatedAuthority;
+      expect(authority).toBeDefined();
+      const run = vi.fn();
+      bindAgentRunTerminalWriteContext(authority!, {
+        run: <T>(write: () => T): T => {
+          run();
+          return write();
+        },
+      });
+      mocks.dispatchChannelMessageAction.mockImplementationOnce(async () => {
+        if (replaced) {
+          clearAgentRunTerminalWriteContext(authority!.operationalRunInstance);
+        }
+        return jsonResult({ ok: true, messageId: "owned-send" });
+      });
+      try {
+        const { respond } = await runMessageActionRequest(
+          createTelegramSourceSendRequest("chat-123", "owned progress", `mirror-${replaced}`),
+          owned.client,
+          owned.context,
+        );
+        expect(firstRespondCall(respond)[0]).toBe(true);
+        expect(run).toHaveBeenCalledTimes(replaced ? 0 : 1);
+        expect(mocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledOnce();
+      } finally {
+        await drainAgentRunTerminalWrites(authority!.operationalRunInstance);
+        owned.close();
+      }
+    },
+  );
 
   it("uses the signed run session for gateway-owned source reply transcript mirrors", async () => {
     registerMessageActionPlugin();

@@ -750,6 +750,7 @@ export const databaseWorkerCoreTestFiles = [
   "test/scripts/pr-worktree-provision.test.ts",
   "test/scripts/pr-worktree-state.test.ts",
   "src/agents/cli-runner/history-boundary.test.ts",
+  "src/agents/cli-runner/history-boundary.clearing-reset.test.ts",
   "src/agents/cli-runner/session-history.test.ts",
   "src/agents/cli-runner/session-history.reset-gap.test.ts",
   "src/agents/cli-runner/session-history.async.test.ts",

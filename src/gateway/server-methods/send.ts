@@ -17,6 +17,7 @@ import { resolveChannelThreadAddressing } from "../../channels/thread-addressing
 import { createChannelPartialDeliveryError } from "../../channels/turn/partial-delivery-error.js";
 import { createOutboundSendDeps } from "../../cli/deps.js";
 import { selectLiveRuntimeConfig } from "../../config/runtime-snapshot.js";
+import { captureAgentRunTerminalPersistence } from "../../infra/agent-run-terminal-writes.js";
 import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
 import { resolveImplicitMessageActionTarget } from "../../infra/outbound/message-action-normalization.js";
 import {
@@ -100,6 +101,11 @@ export const sendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, trustedContext.error);
       return;
     }
+    // Capture before delivery awaits: a later fallback candidate must not lend its writer.
+    const sourceRunId = client?.internal?.agentRuntimeIdentity?.operationalRunInstance?.runId;
+    const sourceReplyWriteContext = sourceRunId
+      ? captureAgentRunTerminalPersistence(sourceRunId).writeContext
+      : undefined;
     const conversationReadOrigin = resolveGatewayConversationReadOrigin({
       client,
       requestedOrigin: request.conversationReadOrigin,
@@ -270,6 +276,7 @@ export const sendHandlers: GatewayRequestHandlers = {
                 });
               }
               const sourceReplyMirror = {
+                writeContext: sourceReplyWriteContext,
                 action: request.action,
                 channel,
                 actionParams: request.params,

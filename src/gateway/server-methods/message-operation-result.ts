@@ -136,7 +136,7 @@ export function scheduleDeliveredSourceReplyTranscriptMirror(params: {
   const queueKey = params.mirror.sessionKey?.trim() || "__global__";
   // Queue per session so current-conversation source replies are visible before
   // a following turn can read the transcript.
-  return sourceReplyTranscriptMirrorQueue.enqueue(queueKey, async () => {
+  const persistence = sourceReplyTranscriptMirrorQueue.enqueue(queueKey, async () => {
     try {
       const mirrored = await mirrorDeliveredSourceReplyToTranscript(params.mirror);
       if (!mirrored && params.mirror.sourceReplyFinal === true) {
@@ -156,4 +156,6 @@ export function scheduleDeliveredSourceReplyTranscriptMirror(params: {
       });
     }
   });
+  params.mirror.writeContext?.track(persistence);
+  return persistence;
 }
