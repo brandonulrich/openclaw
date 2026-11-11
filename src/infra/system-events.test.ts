@@ -387,15 +387,18 @@ describe("system events (session routing)", () => {
     for (let index = 0; index < 25; index += 1) {
       notify(`Alpha progress ${index}`, "alpha");
     }
-    expect(peekSystemEvents("agent:alpha:global")).toEqual(
-      Array.from({ length: 20 }, (_, index) => "Alpha progress " + index),
-    );
+    expect(peekSystemEvents("agent:alpha:global")).toEqual([
+      ...Array.from({ length: 20 }, (_, index) => "Alpha progress " + index),
+      expect.stringContaining("5 notices were dropped because 20 notices were already pending"),
+    ]);
     expect(await drainFormattedEvents(mainKey, { isMainSession: true })).toBeUndefined();
     const beta = await drainFormattedEvents("global", { agentId: "beta" });
     expect(beta).toContain("Beta result is ready");
     expect(beta).not.toContain("Alpha progress");
+    expect(beta).not.toContain("System event queue overflow");
     const alpha = await drainFormattedEvents("global", { agentId: "alpha" });
     expect(alpha).toContain("Alpha progress 19");
+    expect(alpha).toContain("(unkeyed: 5)");
     expect(alpha).not.toContain("Beta result is ready");
   });
 

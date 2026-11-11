@@ -11,6 +11,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { DeferredHookWake } from "../../cron/wake-contract.js";
 import {
   claimSystemEventTurn,
+  consumeSelectedSystemEventEntries,
+  enqueueSystemEventEntry,
   drainSystemEvents,
   enqueueRequiredSystemEventEntry,
   enqueueAutomationSystemEvent,
@@ -377,6 +379,48 @@ describe("authenticated immediate hook wake admission", () => {
           !existing,
         ]);
       }
+    },
+  );
+
+  it.each([false, true])(
+    "joins a pending wake after overflow (free slot: %s)",
+    async (freeSlot) => {
+      for (let i = 0; i < 19; i++) {
+        enqueueRequiredSystemEventEntry(`Notice ${i}`, { sessionKey });
+      }
+      const dispatcher = createGatewayHookDispatcher({
+        deps: {} as never,
+        logHooks: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never,
+      });
+      const { handler } = fixture(dispatcher);
+      const handoff = controlledHandoff(true);
+      const first = post(handler);
+      const requests = [first];
+      try {
+        await awaitGateBeforeSettlement(handoff.submitted.promise, first, "Wake never submitted");
+        const original = peekSystemEventEntries(sessionKey);
+        expect(enqueueSystemEventEntry("Dropped", { sessionKey })).toBeNull();
+        if (freeSlot) {
+          consumeSelectedSystemEventEntries(sessionKey, [original[0]!]);
+        }
+        const before = peekSystemEventEntries(sessionKey);
+        const second = post(handler);
+        requests.push(second);
+        await awaitGateBeforeSettlement(
+          handoff.joined.promise,
+          second,
+          "Retry did not join receipt",
+        );
+        expect(peekSystemEventEntries(sessionKey)).toEqual(before);
+        expect(isSystemEventTurnOwned(sessionKey, original[19]!)).toBe(true);
+      } finally {
+        handoff.acceptance.resolve({ ok: true });
+        await Promise.all(requests);
+      }
+      expectWake(await first, 200, { ok: true, eventOutcome: "queued" });
+      expectWake(await requests[1]!, 200, { ok: true, eventOutcome: "coalesced" });
+      expect(mocks.enqueue).toHaveBeenCalledOnce();
+      expect(handoff.cancel).not.toHaveBeenCalled();
     },
   );
 

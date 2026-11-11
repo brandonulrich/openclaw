@@ -17,7 +17,7 @@ import {
   consumeSelectedSystemEventEntries,
   enqueueRequiredSystemEventEntry,
   isSystemEventTurnOwned,
-  peekSystemEventEntries,
+  peekLastSystemEventEntry,
 } from "../../infra/system-events.js";
 import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import { toAgentStoreSessionKey } from "../../routing/session-key.js";
@@ -134,7 +134,7 @@ export function createHookWakeDispatcher(
     const eventOutcome = occurrence ? "queued" : "coalesced";
     let receipt: SessionEventReceipt | undefined;
     if (!occurrence) {
-      const coalesced = peekSystemEventEntries(eventOptions.sessionKey).at(-1);
+      const coalesced = peekLastSystemEventEntry(eventOptions.sessionKey);
       if (
         !coalesced ||
         coalesced.text !== value.text.trim() ||

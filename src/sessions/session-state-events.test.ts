@@ -552,3 +552,39 @@ describe("session state watcher cursor batches", () => {
     ).toEqual([{ watcher_store_path: "/synthetic/first.sqlite" }]);
   });
 });
+
+describe("watched-session activity at Home queue capacity", () => {
+  it("tells Home when the 21st watched session's notice cannot be queued", async () => {
+    const database = createDatabaseOptions();
+    const record = (index: number) =>
+      recordSessionStateEventAsync(
+        eventInput({
+          sessionKey: `agent:main:dashboard:watched-${index}`,
+          sessionId: `session-watched-${index}`,
+        }),
+        database,
+      );
+    for (let index = 1; index <= 20; index++) {
+      await record(index);
+    }
+    const pending = peekSystemEventEntries(watcher);
+    expect(pending).toHaveLength(20);
+
+    await record(21);
+
+    const queued = peekSystemEventEntries(watcher);
+    expect(queued.slice(0, 20)).toEqual(pending);
+    expect(queued.slice(20).map(({ text }) => text)).toEqual([
+      expect.stringContaining("1 notice was dropped because 20 notices were already pending"),
+    ]);
+    const omittedBefore = readCursor(database, watcher, "agent:main:dashboard:watched-21");
+    expect(omittedBefore?.last_seen_sequence).toBe(0);
+    // Production passive-turn admission builds prompt context and acknowledges only admitted targets.
+    expect(await drain()).toContain("(session-state: 1)");
+    expect(readCursor(database, watcher, "agent:main:dashboard:watched-21")).toEqual(omittedBefore);
+    expect(
+      readCursor(database, watcher, "agent:main:dashboard:watched-1")?.last_seen_sequence,
+    ).toBeGreaterThan(0);
+    expect(peekSystemEventEntries(watcher)).toEqual([]);
+  });
+});

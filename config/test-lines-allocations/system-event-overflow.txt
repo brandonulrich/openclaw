@@ -1,0 +1,3 @@
+184
+# Bounded queue marker, exact occurrence controls, real watched-session producer/prompt admission,
+# and immediate-hook retry custody with marker present (full queue and one free slot).

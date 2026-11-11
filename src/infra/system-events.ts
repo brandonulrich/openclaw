@@ -25,6 +25,11 @@ import {
 } from "./exec-request-context.js";
 import { generateSecureUuid } from "./secure-random.js";
 import {
+  queuedOverflow,
+  recordDroppedSystemEvent,
+  type SystemEventOverflow,
+} from "./system-event-overflow.js";
+import {
   getSystemEventStorePath,
   isSystemEventStoreCurrent,
   registerSystemEventStoreOwner,
@@ -66,9 +71,15 @@ export class SystemEventQueueFullError extends Error {
 type SessionQueue = {
   queue: SystemEvent[];
   lastContextKey: string | null;
+  /** One unowned summary of silently dropped notices, held outside the MAX_EVENTS bound. */
+  overflow?: SystemEventOverflow;
 };
 
 const SYSTEM_EVENT_QUEUES_KEY = Symbol.for("openclaw.systemEvents.queues");
+
+function lastQueuedNotice(entry: SessionQueue) {
+  return entry.queue.findLast((event) => event !== queuedOverflow(entry)?.event);
+}
 
 const receiptSettlements = resolveGlobalSingleton(
   Symbol.for("openclaw.systemEvents.receiptSettlements"),
@@ -275,17 +286,25 @@ function enqueueOwnedSystemEventEntry(
       event.text === cleaned &&
       matches(event);
     if (
-      normalizedContextKey === null ? duplicate(entry.queue.at(-1)) : entry.queue.some(duplicate)
+      normalizedContextKey === null
+        ? duplicate(lastQueuedNotice(entry))
+        : entry.queue.some(duplicate)
     ) {
       return null;
     }
   }
-  if (entry.queue.length >= MAX_EVENTS && !(options.replace && entry.queue.some(matches))) {
+  const pendingCount = entry.queue.length - (queuedOverflow(entry) ? 1 : 0);
+  if (pendingCount >= MAX_EVENTS && !(options.replace && entry.queue.some(matches))) {
     const error = new SystemEventQueueFullError();
-    log.warn(error.message, { sessionKey: key });
+    const prefix = normalizedContextKey?.split(":", 1)[0] ?? "unkeyed";
+    const source = /^[a-z][a-z0-9._-]{0,31}$/.test(prefix) ? prefix : "other";
     if (receiptOptions?.throwOnFull) {
+      // Strict producers report the refusal to their own caller.
+      log.warn(error.message, { sessionKey: key, source });
       throw error;
     }
+    const dropped = recordDroppedSystemEvent(entry, source, MAX_EVENTS, sessionStorePath);
+    log.warn(error.message, { sessionKey: key, source, droppedSinceDrain: dropped });
     return null;
   }
   const replaced = options.replace ? entry.queue.filter(matches) : [];
@@ -693,6 +712,13 @@ export function drainSystemEvents(sessionKey: string): string[] {
 
 export function peekSystemEventEntries(sessionKey: string): SystemEvent[] {
   return getSessionQueue(sessionKey)?.queue.map(cloneSystemEvent) ?? [];
+}
+
+/** The occurrence considered by unkeyed duplicate admission, never the omission marker. */
+export function peekLastSystemEventEntry(sessionKey: string): SystemEvent | undefined {
+  const entry = getSessionQueue(sessionKey);
+  const event = entry && lastQueuedNotice(entry);
+  return event && cloneSystemEvent(event);
 }
 
 /** Routed completions retain request ownership after process output expires. Stop is a cold path. */
